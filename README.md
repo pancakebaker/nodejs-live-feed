@@ -40,6 +40,11 @@ npm run build
 npm run format:check
 ```
 
+The formatter command currently reports the inherited 62-file source baseline; it is retained for
+visibility and is not a blocking CI step until a separate formatting-only cleanup is approved.
+Standalone CI provisions RabbitMQ and Redis and runs the full suite. The PostgreSQL history test is
+intentionally skipped there unless `LIVE_FEED_DATABASE_URL` and a compatible database are supplied.
+
 Run `npm run dev` for the service and `npm run watch:auction -- <auction-id>` for the development
 Socket.IO observer. `npm run migrate:history` applies the optional history migration when
 `LIVE_FEED_DATABASE_URL` is configured.

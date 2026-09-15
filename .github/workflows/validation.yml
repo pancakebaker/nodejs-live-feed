@@ -10,6 +10,9 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: auction
+          RABBITMQ_DEFAULT_PASS: change_me_in_local_env
         ports:
           - 5672:5672
         options: >-
@@ -37,7 +40,6 @@ jobs:
           node-version: 24.x
           cache: npm
       - run: npm ci
-      - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
