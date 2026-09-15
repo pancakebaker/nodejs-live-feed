@@ -1,5 +1,7 @@
 # Node.js Live Feed
 
+[![CI](https://github.com/pancakebaker/nodejs-live-feed/actions/workflows/validation.yml/badge.svg)](https://github.com/pancakebaker/nodejs-live-feed/actions/workflows/validation.yml)
+
 Standalone Node.js/TypeScript Live Feed service for the Distributed Bidding Auction Platform.
 
 ## Responsibility
@@ -48,6 +50,19 @@ intentionally skipped there unless `LIVE_FEED_DATABASE_URL` and a compatible dat
 Run `npm run dev` for the service and `npm run watch:auction -- <auction-id>` for the development
 Socket.IO observer. `npm run migrate:history` applies the optional history migration when
 `LIVE_FEED_DATABASE_URL` is configured.
+
+## Related repositories
+
+- [Laravel React Auction Web](https://github.com/pancakebaker/laravel-react-auction-web) is the tenant-facing BFF and browser client.
+- [Bidding Service](https://github.com/pancakebaker/dotnet-bidding-service) owns authoritative auction state and internal room-admission decisions.
+- [Operations Portal](https://github.com/pancakebaker/dotnet-blazor-operations-portal) consumes its own operations projection.
+- [DBAP Platform Infrastructure](https://github.com/pancakebaker/docker-dbap-platform) provides development RabbitMQ and Redis.
+- [Historical integrated monorepo](https://github.com/pancakebaker/distributed-bidding-auction-platform) preserves the original platform snapshot.
+
+The [platform architecture map](https://github.com/pancakebaker/docker-dbap-platform/blob/main/docs/architecture.md)
+shows the cross-service boundaries. This repository is a functioning service
+extraction and is not a claim of complete production hardening. No license file
+is currently included in this extracted repository.
 
 ## External dependencies
 
