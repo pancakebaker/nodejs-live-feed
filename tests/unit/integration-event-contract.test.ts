@@ -16,9 +16,7 @@ import {
 
 const tenantId = 'aaaaaaaa-1111-4111-8111-111111111111';
 
-const fixtureDirectory = fileURLToPath(
-  new URL('../../contracts/fixtures/v1/', import.meta.url),
-);
+const fixtureDirectory = fileURLToPath(new URL('../../contracts/fixtures/v1/', import.meta.url));
 
 const fixtureNames = [
   'auction-bid-accepted.json',
