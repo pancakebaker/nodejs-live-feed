@@ -1,0 +1,349 @@
+/**
+ * Redis-backed idempotency and aggregate-version state for live-feed event processing.
+ */
+import type { RedisClientType } from 'redis';
+import type { LiveFeedEnvelope, TenantStatusChangedEnvelope } from '../../domain/events.js';
+import type {
+  EventAcceptanceResult,
+  EventAcceptanceStatus,
+  LiveAuctionProjection,
+  LiveStateStore,
+  TenantStatusAcceptanceResult,
+} from '../../application/ports/live-state-store.js';
+import { integrationEventTypes } from '../../domain/events.js';
+
+const acceptEventScript = `
+local processedKey = KEYS[1]
+local versionKey = KEYS[2]
+local projectionKey = KEYS[3]
+local tenantMappingKey = KEYS[4]
+
+local incomingVersion = tonumber(ARGV[1])
+local ttlSeconds = tonumber(ARGV[2])
+local eventType = ARGV[3]
+local currentBidderId = ARGV[4]
+local currentBidAmount = ARGV[5]
+local finalWinnerId = ARGV[6]
+local finalPrice = ARGV[7]
+local occurredAtUtc = ARGV[8]
+local tenantId = ARGV[9]
+
+local currentVersion = redis.call('GET', versionKey)
+local numericCurrentVersion =
+  currentVersion and tonumber(currentVersion) or nil
+local hasPurchase = redis.call('HEXISTS', projectionKey, 'purchasedAtUtc') == 1
+
+if redis.call('EXISTS', processedKey) == 1 then
+  return {'duplicate', currentVersion or ''}
+end
+
+redis.call('SET', processedKey, '1', 'EX', ttlSeconds)
+redis.call('SET', tenantMappingKey, tenantId)
+
+if numericCurrentVersion then
+  if incomingVersion < numericCurrentVersion then
+    return {'stale', currentVersion}
+  end
+
+  if incomingVersion == numericCurrentVersion then
+    redis.call('HSET', projectionKey, 'aggregateVersion', tostring(incomingVersion))
+    redis.call('HSET', projectionKey, 'tenantId', tenantId)
+    if eventType == 'BidAccepted' then
+      redis.call('HSET', projectionKey, 'currentBidderId', currentBidderId, 'currentBidAmount', currentBidAmount)
+    elseif eventType == 'AuctionClosed' then
+      redis.call('HSET', projectionKey, 'status', 'Closed')
+      if finalPrice ~= '' and not hasPurchase then
+        redis.call('HSET', projectionKey, 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice)
+      end
+    elseif eventType == 'WinnerSelected' then
+      if not hasPurchase then
+        redis.call('HSET', projectionKey, 'status', 'Closed', 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice)
+      end
+    elseif eventType == 'AuctionPurchased' then
+      if not hasPurchase then
+        redis.call('HSET', projectionKey, 'status', 'Closed', 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice, 'purchasedAtUtc', occurredAtUtc)
+      end
+    elseif eventType == 'AuctionCancelled' then
+      redis.call('HSET', projectionKey, 'status', 'Cancelled')
+    end
+    return {'same-version', currentVersion}
+  end
+end
+
+local status = 'accepted'
+
+if numericCurrentVersion
+  and incomingVersion > numericCurrentVersion + 1 then
+  status = 'gap'
+end
+
+redis.call('SET', versionKey, tostring(incomingVersion))
+
+redis.call('HSET', projectionKey, 'aggregateVersion', tostring(incomingVersion))
+redis.call('HSET', projectionKey, 'tenantId', tenantId)
+if eventType == 'BidAccepted' then
+  redis.call('HSET', projectionKey, 'currentBidderId', currentBidderId, 'currentBidAmount', currentBidAmount)
+elseif eventType == 'AuctionClosed' then
+  redis.call('HSET', projectionKey, 'status', 'Closed')
+  if finalPrice ~= '' and not hasPurchase then
+    redis.call('HSET', projectionKey, 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice)
+  end
+elseif eventType == 'WinnerSelected' then
+  if not hasPurchase then
+    redis.call('HSET', projectionKey, 'status', 'Closed', 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice)
+  end
+elseif eventType == 'AuctionPurchased' then
+  if not hasPurchase then
+    redis.call('HSET', projectionKey, 'status', 'Closed', 'finalWinnerId', finalWinnerId, 'finalPrice', finalPrice, 'purchasedAtUtc', occurredAtUtc)
+  end
+elseif eventType == 'AuctionCancelled' then
+  redis.call('HSET', projectionKey, 'status', 'Cancelled')
+end
+
+return {status, currentVersion or ''}
+`;
+
+const acceptTenantStatusEventScript = `
+local eventKey = KEYS[1]
+local versionKey = KEYS[2]
+local incomingVersion = tonumber(ARGV[1])
+local eventId = ARGV[2]
+local currentVersion = redis.call('GET', versionKey)
+local numericCurrentVersion = currentVersion and tonumber(currentVersion) or nil
+
+if redis.call('EXISTS', eventKey) == 1 then
+  return {'duplicate', currentVersion or ''}
+end
+
+if numericCurrentVersion and incomingVersion <= numericCurrentVersion then
+  return {'stale', currentVersion}
+end
+
+redis.call('SET', versionKey, tostring(incomingVersion))
+redis.call('SET', eventKey, eventId)
+return {'accepted', currentVersion or ''}
+`;
+
+const rollbackTenantStatusEventScript = `
+local eventKey = KEYS[1]
+local versionKey = KEYS[2]
+local eventId = ARGV[1]
+local version = ARGV[2]
+if redis.call('GET', eventKey) == eventId and redis.call('GET', versionKey) == version then
+  redis.call('DEL', eventKey)
+  redis.call('DEL', versionKey)
+end
+return 1
+`;
+
+/**
+ * Stores processed event IDs and highest auction versions in Redis using one atomic script.
+ */
+export class LiveFeedStateStore implements LiveStateStore {
+  public constructor(
+    private readonly redis: RedisClientType,
+    private readonly idempotencyTtlSeconds: number,
+  ) {}
+
+  /**
+   * Accepts an event only when it is new and does not regress the auction aggregate version.
+   */
+  public async acceptEvent(
+    envelope: Exclude<LiveFeedEnvelope, TenantStatusChangedEnvelope>,
+  ): Promise<EventAcceptanceResult> {
+    const result = await this.redis.eval(acceptEventScript, {
+      keys: [
+        this.processedEventKey(envelope.eventId),
+        this.auctionVersionKey(envelope.payload.tenantId, envelope.aggregateId),
+        this.projectionKey(envelope.payload.tenantId, envelope.aggregateId),
+        this.auctionTenantKey(envelope.aggregateId),
+      ],
+      arguments: [
+        String(envelope.aggregateVersion),
+        String(this.idempotencyTtlSeconds),
+        envelope.eventType,
+        ...this.projectionArguments(envelope),
+      ],
+    });
+
+    return this.parseAcceptanceResult(result);
+  }
+
+  /** Atomically accepts a newer tenant status version and deduplicates its event ID. */
+  public async acceptTenantStatusEvent(
+    envelope: TenantStatusChangedEnvelope,
+  ): Promise<TenantStatusAcceptanceResult> {
+    const result = await this.redis.eval(acceptTenantStatusEventScript, {
+      keys: [
+        this.tenantStatusEventKey(envelope.eventId),
+        this.tenantStatusVersionKey(envelope.aggregateId),
+      ],
+      arguments: [String(envelope.aggregateVersion), envelope.eventId],
+    });
+
+    if (
+      !Array.isArray(result) ||
+      result.length !== 2 ||
+      typeof result[0] !== 'string' ||
+      typeof result[1] !== 'string'
+    ) {
+      throw new Error('Unexpected Redis tenant status acceptance result.');
+    }
+
+    if (result[0] !== 'accepted' && result[0] !== 'duplicate' && result[0] !== 'stale') {
+      throw new Error(`Unexpected Redis tenant status acceptance status: ${result[0]}`);
+    }
+
+    return {
+      status: result[0],
+      previousVersion: result[1] ? Number(result[1]) : null,
+    };
+  }
+
+  /** Rolls back an accepted tenant event reservation after a failed room eviction. */
+  public async rollbackTenantStatusEvent(envelope: TenantStatusChangedEnvelope): Promise<void> {
+    await this.redis.eval(rollbackTenantStatusEventScript, {
+      keys: [
+        this.tenantStatusEventKey(envelope.eventId),
+        this.tenantStatusVersionKey(envelope.aggregateId),
+      ],
+      arguments: [envelope.eventId, String(envelope.aggregateVersion)],
+    });
+  }
+
+  /**
+   * Returns the Redis key used to deduplicate one integration event ID.
+   */
+  public processedEventKey(eventId: string): string {
+    return `live-feed:v2:processed-event:${eventId}`;
+  }
+
+  /**
+   * Returns the Redis key that stores the highest accepted aggregate version for an auction.
+   */
+  public auctionVersionKey(tenantId: string, auctionId: string): string {
+    return `live-feed:v2:tenant:${tenantId}:auction-version:${auctionId}`;
+  }
+
+  /** Returns the Redis hash key used for the non-authoritative auction projection. */
+  public projectionKey(tenantId: string, auctionId: string): string {
+    return `live-feed:v2:tenant:${tenantId}:auction:${auctionId}`;
+  }
+
+  /** Returns the Redis mapping key for an auction's authoritative tenant. */
+  public auctionTenantKey(auctionId: string): string {
+    return `live-feed:v2:auction-tenant:${auctionId}`;
+  }
+
+  /** Returns the durable tenant status event marker key. */
+  public tenantStatusEventKey(eventId: string): string {
+    return `live-feed:v2:tenant-status-event:${eventId}`;
+  }
+
+  /** Returns the durable highest accepted tenant status version key. */
+  public tenantStatusVersionKey(tenantId: string): string {
+    return `live-feed:v2:tenant:${tenantId}:status-version`;
+  }
+
+  /** Reads the latest projected auction state, if one has been accepted. */
+  public async getProjection(auctionId: string): Promise<LiveAuctionProjection | null> {
+    const tenantId = await this.redis.get(this.auctionTenantKey(auctionId));
+    if (!tenantId) {
+      return null;
+    }
+    const values = await this.redis.hGetAll(this.projectionKey(tenantId, auctionId));
+    if (Object.keys(values).length === 0) {
+      return null;
+    }
+
+    return {
+      tenantId,
+      auctionId,
+      aggregateVersion: Number(values.aggregateVersion),
+      status:
+        values.status === 'Closed' || values.status === 'Cancelled' ? values.status : undefined,
+      currentBidAmount: values.currentBidAmount ? Number(values.currentBidAmount) : undefined,
+      currentBidderId: values.currentBidderId || undefined,
+      finalWinnerId: values.finalWinnerId || undefined,
+      finalPrice: values.finalPrice ? Number(values.finalPrice) : undefined,
+      purchasedAtUtc: values.purchasedAtUtc || undefined,
+    };
+  }
+
+  private parseAcceptanceResult(result: unknown): EventAcceptanceResult {
+    if (
+      !Array.isArray(result) ||
+      result.length !== 2 ||
+      typeof result[0] !== 'string' ||
+      typeof result[1] !== 'string'
+    ) {
+      throw new Error('Unexpected Redis event acceptance result.');
+    }
+
+    const status = result[0];
+    const previousVersionText = result[1];
+
+    if (!this.isAcceptanceStatus(status)) {
+      throw new Error(`Unexpected Redis event acceptance status: ${status}`);
+    }
+
+    return {
+      status,
+      previousVersion: previousVersionText ? Number(previousVersionText) : null,
+    };
+  }
+
+  private projectionArguments(
+    envelope: Exclude<LiveFeedEnvelope, TenantStatusChangedEnvelope>,
+  ): string[] {
+    if (envelope.eventType === integrationEventTypes.bidAccepted) {
+      return [
+        envelope.payload.bidderId,
+        String(envelope.payload.amount),
+        '',
+        '',
+        '',
+        envelope.payload.tenantId,
+      ];
+    }
+
+    if (envelope.eventType === integrationEventTypes.auctionClosed) {
+      return [
+        '',
+        '',
+        envelope.payload.finalBidderId ?? '',
+        envelope.payload.finalBidAmount === null ? '' : String(envelope.payload.finalBidAmount),
+        '',
+        envelope.payload.tenantId,
+      ];
+    }
+
+    if (envelope.eventType === integrationEventTypes.winnerSelected) {
+      return [
+        '',
+        '',
+        envelope.payload.winnerId,
+        String(envelope.payload.amount),
+        '',
+        envelope.payload.tenantId,
+      ];
+    }
+
+    if (envelope.eventType === integrationEventTypes.auctionCancelled) {
+      return ['', '', '', '', '', envelope.payload.tenantId];
+    }
+
+    return [
+      '',
+      '',
+      envelope.payload.bidderId,
+      String(envelope.payload.finalPrice),
+      envelope.payload.purchasedAtUtc,
+      envelope.payload.tenantId,
+    ];
+  }
+
+  private isAcceptanceStatus(value: string): value is EventAcceptanceStatus {
+    return ['accepted', 'duplicate', 'stale', 'same-version', 'gap'].includes(value);
+  }
+}
