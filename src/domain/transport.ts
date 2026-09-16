@@ -23,6 +23,9 @@ export const auctionSocketEvents = {
 export const adminSocketEvents = {
   subscribe: 'admin:subscribe',
   activity: 'admin:activity',
+  activitySubscribe: 'admin:activity:subscribe',
+  activityUnsubscribe: 'admin:activity:unsubscribe',
+  activityDelta: 'admin:activity:delta',
   subscriptionError: 'subscription:error',
 } as const;
 
@@ -30,3 +33,8 @@ export const adminSocketEvents = {
 export const adminSocketRooms = {
   liveFeed: 'admin:live-feed',
 } as const;
+
+/** Builds a server-owned room for tenant-scoped admin activity deltas. */
+export function adminTenantActivityRoom(tenantId: string): string {
+  return `admin:tenant-activity:${tenantId}`;
+}

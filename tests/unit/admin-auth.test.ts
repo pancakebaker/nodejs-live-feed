@@ -14,6 +14,23 @@ void test('admin auth creates and validates a signed HttpOnly same-site root coo
   assert.equal(auth.isAuthorizedCookie(undefined), false);
 });
 
+void test('admin auth exposes trusted tenant claims from a valid session', () => {
+  const auth = new AdminAuth({ secret: 'test-secret', secure: false, now: () => 1_000_000 });
+  const cookie = auth.createSession({
+    sub: 'admin',
+    role: 'SystemAdministrator',
+    permissions: ['livefeed.admin'],
+    tenantId: 'aaaaaaaa-1111-4111-8111-111111111111',
+  });
+
+  assert.deepEqual(auth.sessionClaims(cookie), {
+    sub: 'admin',
+    role: 'SystemAdministrator',
+    permissions: ['livefeed.admin'],
+    tenantId: 'aaaaaaaa-1111-4111-8111-111111111111',
+  });
+});
+
 void test('admin auth rejects expired sessions and adds Secure in production mode', () => {
   let now = 1_000_000;
   const auth = new AdminAuth({

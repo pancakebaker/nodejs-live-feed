@@ -20,6 +20,7 @@ import type {
   BidAcceptedEnvelope,
   TenantStatusChangedEnvelope,
 } from '../../src/domain/events.js';
+import type { AdminActivityUpdate } from '../../src/application/ports/admin-activity-publisher.js';
 
 const tenantId = 'aaaaaaaa-1111-4111-8111-111111111111';
 
@@ -151,6 +152,44 @@ void test('accepted events publish the existing event name and payload through t
     occurredAtUtc: envelope.occurredAtUtc,
     correlationId: envelope.correlationId,
   });
+});
+
+void test('accepted bid and purchase events publish normalized admin deltas once', async () => {
+  const updates: AdminActivityUpdate[] = [];
+  let calls = 0;
+  const processor = new LiveFeedEventProcessor(
+    { publish: () => undefined },
+    { acceptEvent: () => Promise.resolve({ status: 'accepted', previousVersion: ++calls }) },
+    undefined,
+    undefined,
+    { publish: (update) => updates.push(update) },
+  );
+  const bid = event();
+  const purchase = purchaseEvent(bid.aggregateId);
+
+  await processor.process(bid);
+  await processor.process(purchase);
+
+  assert.deepEqual(updates.map((update) => [update.eventId, update.eventType]), [
+    [bid.eventId, 'BidAccepted'],
+    [purchase.eventId, 'AuctionPurchased'],
+  ]);
+  assert.equal(updates[0]?.occurredAtUtc, bid.occurredAtUtc);
+  assert.equal(updates[1]?.occurredAtUtc, purchase.occurredAtUtc);
+});
+
+void test('duplicate and stale events do not publish admin deltas', async () => {
+  const updates: AdminActivityUpdate[] = [];
+  const processor = new LiveFeedEventProcessor(
+    { publish: () => undefined },
+    stateStore({ status: 'duplicate', previousVersion: 7 }),
+    undefined,
+    undefined,
+    { publish: (update) => updates.push(update) },
+  );
+
+  await processor.process(event());
+  assert.equal(updates.length, 0);
 });
 
 void test('stale events are ignored without publishing', async () => {

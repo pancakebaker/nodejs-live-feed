@@ -3,6 +3,7 @@ export type AdminHandoffClaims = {
   sub: string;
   role: string;
   permissions: string[];
+  tenantId?: string;
 };
 
 /** Stores opaque browser handoff codes for one-time redemption. */

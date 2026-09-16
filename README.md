@@ -17,6 +17,35 @@ access Bidding's PostgreSQL database. The Laravel/React client and other consume
 updates through this service; authorization/admission checks continue to call Bidding's internal
 endpoint.
 
+### Tenant-wide admin activity
+
+Authorized SystemAdministrator sessions may subscribe to `admin:activity:subscribe`. The service
+derives the room from the trusted session: tenant-scoped sessions join
+`admin:tenant-activity:{tenantId}`, while the existing global SystemAdministrator session joins
+`admin:live-feed` for intentional cross-tenant operations visibility. Any tenant value supplied by
+the browser is ignored. `admin:activity:unsubscribe` leaves the same server-selected room.
+
+The `admin:activity:delta` event currently carries only `BidAccepted` and `AuctionPurchased`
+activity. It includes the validated envelope identity and timestamp alongside the existing safe
+socket payload:
+
+```json
+{
+  "eventId": "<envelope event id>",
+  "eventType": "BidAccepted",
+  "tenantId": "<trusted tenant id>",
+  "auctionId": "<auction id>",
+  "occurredAtUtc": "2026-09-16T10:00:00.000Z",
+  "aggregateVersion": 12,
+  "payload": "<existing safe socket payload>"
+}
+```
+
+`eventId` and `occurredAtUtc` come from the validated RabbitMQ integration envelope. This channel
+is for live deltas only, not historical reporting: consumers must obtain an authoritative activity
+snapshot initially and after reconnect. Existing auction-room subscriptions and their events are
+unchanged, and no bidder profile data is added.
+
 ## Event compatibility
 
 `contracts/fixtures/v1` contains copied golden compatibility baselines originating from the DBAP

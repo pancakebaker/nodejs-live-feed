@@ -10,6 +10,7 @@ export type AdminTokenClaims = {
   email?: string;
   role?: string;
   permissions?: string[];
+  tenantId?: string;
   iss: string;
   aud: string | string[];
   iat: number;

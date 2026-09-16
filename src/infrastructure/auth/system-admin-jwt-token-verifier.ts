@@ -8,6 +8,7 @@ import type {
   AdminTokenClaims,
   AdminTokenVerifier,
 } from '../../application/ports/admin-token-verifier.js';
+import { isUuid } from '../../domain/events.js';
 
 /** Configuration for the independent system-administrator JWT trust boundary. */
 export type SystemAdminJwtTokenVerifierOptions = {
@@ -72,6 +73,7 @@ export class SystemAdminJwtTokenVerifier implements AdminTokenVerifier {
     const exp = numberClaim(payload.exp);
     const nbf = payload.nbf === undefined ? undefined : numberClaim(payload.nbf);
     const jti = stringClaim(payload.jti);
+    const tenantId = stringClaim(payload.tenant_id);
     if (
       !sub ||
       iss !== this.options.issuer ||
@@ -97,6 +99,7 @@ export class SystemAdminJwtTokenVerifier implements AdminTokenVerifier {
       exp,
       nbf,
       jti,
+      ...(isUuid(tenantId) ? { tenantId } : {}),
     };
   }
 }

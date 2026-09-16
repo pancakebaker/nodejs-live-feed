@@ -87,6 +87,39 @@ export class AdminAuth {
     );
   }
 
+  /** Returns trusted claims from a valid signed session, when the session carries them. */
+  public sessionClaims(cookieHeader: string | undefined): AdminHandoffClaims | undefined {
+    if (!this.isAuthorizedCookie(cookieHeader)) return undefined;
+    const token = readCookie(cookieHeader, 'live_feed_admin');
+    const sessionText = token?.split('.')[0];
+    if (!sessionText || /^\d+$/.test(sessionText)) return undefined;
+
+    try {
+      const value = JSON.parse(Buffer.from(sessionText, 'base64url').toString('utf8')) as {
+        sub?: unknown;
+        role?: unknown;
+        permissions?: unknown;
+        tenantId?: unknown;
+        exp?: unknown;
+      };
+      if (
+        typeof value.sub !== 'string' ||
+        typeof value.role !== 'string' ||
+        !Array.isArray(value.permissions) ||
+        !value.permissions.every((permission) => typeof permission === 'string')
+      )
+        return undefined;
+      return {
+        sub: value.sub,
+        role: value.role,
+        permissions: value.permissions,
+        ...(typeof value.tenantId === 'string' ? { tenantId: value.tenantId } : {}),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Returns a deletion cookie for logout.
    */

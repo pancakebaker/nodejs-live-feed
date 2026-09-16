@@ -129,6 +129,7 @@ function sessionClaims(claims: AdminTokenClaims) {
     sub: claims.sub,
     role: claims.role ?? 'SystemAdministrator',
     permissions: claims.permissions ?? [],
+    ...(claims.tenantId ? { tenantId: claims.tenantId } : {}),
   };
 }
 

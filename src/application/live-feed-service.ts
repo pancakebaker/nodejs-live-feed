@@ -15,7 +15,7 @@ import type { LiveFeedConfig } from '../config/config.js';
 import { loadConfig } from '../config/config.js';
 import { LiveFeedEventProcessor } from './processors/live-feed-event-processor.js';
 import { LiveFeedRabbitMqConsumer } from '../infrastructure/messaging/rabbitmq-consumer.js';
-import { adminSocketEvents, adminSocketRooms } from '../domain/transport.js';
+import { adminSocketEvents, adminSocketRooms, adminTenantActivityRoom } from '../domain/transport.js';
 import { LiveFeedStateStore } from '../infrastructure/cache/redis-state.js';
 import { RedisAdminTokenReplayConsumer } from '../infrastructure/cache/redis-admin-token-replay-consumer.js';
 import { RedisAdminHandoffStore } from '../infrastructure/cache/redis-admin-handoff-store.js';
@@ -39,6 +39,7 @@ import { RecentActivityStore } from './diagnostics/recent-activity-store.js';
 import {
   LiveFeedActivityObserver,
   SocketIoAdminLiveFeedPublisher,
+  SocketIoAdminActivityPublisher,
 } from '../transport/websocket/admin-live-feed-publisher.js';
 import { registerRuntimeThreadPoolRoute } from '../transport/http/runtime-thread-pool-route.js';
 import { registerRuntimeChildProcessRoute } from '../transport/http/runtime-child-process-route.js';
@@ -49,6 +50,7 @@ import { BiddingLiveFeedAccessClient } from '../infrastructure/bidding/bidding-l
 import { ServiceTokenIssuer } from '../infrastructure/auth/service-token-issuer.js';
 import { LiveFeedSubscriptionAuthorizer } from './live-feed-subscription-authorizer.js';
 import { registerAuctionSubscriptionHandlers } from '../transport/websocket/auction-subscription-handler.js';
+import { registerAdminActivitySubscriptionHandlers } from '../transport/websocket/admin-activity-subscription-handler.js';
 import { SocketIoTenantRoomEvictor } from '../transport/websocket/socketio-tenant-room-evictor.js';
 
 /**
@@ -108,6 +110,7 @@ export function createLiveFeedService(
   const tenantRoomEvictor = new SocketIoTenantRoomEvictor(io);
   const recentActivity = new RecentActivityStore(50);
   const adminPublisher = new SocketIoAdminLiveFeedPublisher(io);
+  const adminActivityPublisher = new SocketIoAdminActivityPublisher(io);
   const historyStore = createLiveFeedHistoryStore(config);
   const activityObserver = new LiveFeedActivityObserver(
     recentActivity,
@@ -119,6 +122,7 @@ export function createLiveFeedService(
     stateStore,
     activityObserver,
     tenantRoomEvictor,
+    adminActivityPublisher,
   );
   const adminAuth = new AdminAuth({ secret: config.adminSessionSecret });
   const systemAdminTokenVerifier = new SystemAdminJwtTokenVerifier({
@@ -232,7 +236,8 @@ export function createLiveFeedService(
           return;
         }
 
-        void socket.join(adminSocketRooms.liveFeed);
+        const tenantId = adminAuth.sessionClaims(socket.handshake.headers.cookie)?.tenantId;
+        void socket.join(tenantId ? adminTenantActivityRoom(tenantId) : adminSocketRooms.liveFeed);
         acknowledge?.({ ok: true });
       },
     );
@@ -242,6 +247,7 @@ export function createLiveFeedService(
     });
 
     registerAuctionSubscriptionHandlers(socket, stateStore, subscriptionAuthorizer);
+    registerAdminActivitySubscriptionHandlers(socket, adminAuth);
   });
 
   app.use(createHttpErrorHandler());

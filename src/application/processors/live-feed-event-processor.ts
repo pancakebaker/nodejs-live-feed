@@ -1,10 +1,17 @@
 /**
  * Framework-agnostic live-feed event processing and projection decisions.
  */
-import type { IntegrationEventType, LiveFeedEnvelope } from '../../domain/events.js';
-import { integrationEventTypes, toSocketPayload } from '../../domain/events.js';
+import {
+  integrationEventTypes,
+  toSocketPayload,
+  type AuctionPurchasedSocketPayload,
+  type BidAcceptedSocketPayload,
+  type IntegrationEventType,
+  type LiveFeedEnvelope,
+} from '../../domain/events.js';
 import { auctionSocketEvents } from '../../domain/transport.js';
 import type { ActivityRecorder } from '../ports/activity-recorder.js';
+import type { AdminActivityPublisher } from '../ports/admin-activity-publisher.js';
 import type { LiveFeedPublisher } from '../ports/live-feed-publisher.js';
 import type { LiveStateStore } from '../ports/live-state-store.js';
 import type { TenantRoomEvictor } from '../ports/tenant-room-evictor.js';
@@ -44,6 +51,7 @@ export class LiveFeedEventProcessor {
     private readonly stateStore: LiveStateStore,
     private readonly activityRecorder?: ActivityRecorder,
     private readonly tenantRoomEvictor?: TenantRoomEvictor,
+    private readonly adminActivityPublisher?: AdminActivityPublisher,
   ) {}
 
   /**
@@ -98,6 +106,7 @@ export class LiveFeedEventProcessor {
       eventName: socketEvent,
       payload,
     });
+    this.publishAdminActivity(auctionEnvelope);
 
     console.info('Broadcast live-feed event.', {
       eventId: envelope.eventId,
@@ -117,6 +126,35 @@ export class LiveFeedEventProcessor {
     };
     this.recordActivity(auctionEnvelope, 'applied');
     return result;
+  }
+
+  private publishAdminActivity(
+    envelope: Exclude<LiveFeedEnvelope, { eventType: 'TenantStatusChanged' }>,
+  ): void {
+    if (
+      envelope.eventType !== integrationEventTypes.bidAccepted &&
+      envelope.eventType !== integrationEventTypes.auctionPurchased
+    )
+      return;
+
+    try {
+      const payload = toSocketPayload(envelope) as
+        | BidAcceptedSocketPayload
+        | AuctionPurchasedSocketPayload;
+      this.adminActivityPublisher?.publish({
+        eventId: envelope.eventId,
+        eventType: envelope.eventType,
+        tenantId: envelope.payload.tenantId,
+        auctionId: envelope.payload.auctionId,
+        occurredAtUtc: envelope.occurredAtUtc,
+        aggregateVersion: envelope.aggregateVersion,
+        payload,
+      });
+    } catch (error) {
+      console.warn('Live-feed admin activity publication failed.', {
+        message: error instanceof Error ? error.message : 'unknown_error',
+      });
+    }
   }
 
   private async processTenantStatusChanged(
