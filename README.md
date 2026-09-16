@@ -57,10 +57,42 @@ boundaries are established.
 
 ## Local setup
 
-1. Install Node.js 24.x and copy `.env.example` to `.env`.
-2. Provide the external RabbitMQ and Redis services, and configure Bidding Service access when
-   exercising authenticated subscriptions.
-3. Install and validate:
+### Prerequisites and configuration
+
+Install Node.js 24.x, RabbitMQ, and Redis. The service consumes the
+`auction.events` RabbitMQ exchange and uses Redis for projection state and
+duplicate/stale-event protection. The Bidding Service is also required when
+the service performs its internal admission checks.
+
+From a fresh clone, create the local environment before starting the service:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+On Unix/macOS, use `cp .env.example .env`. `.env.example` contains harmless
+local placeholders and the exact variable names. The important settings are:
+
+| Setting | Purpose | Local default/requirement |
+| --- | --- | --- |
+| `PORT` | HTTP and Socket.IO port | `3001` |
+| `CLIENT_ORIGIN` | Explicit credentialed Laravel browser origin | `http://localhost:8000` |
+| `RABBITMQ_URL` | RabbitMQ connection | local RabbitMQ at `localhost:5672` |
+| `RABBITMQ_EXCHANGE` | Consumed exchange | `auction.events` |
+| `LIVE_FEED_RABBITMQ_QUEUE` | Consumer queue | `live-feed.bid-events` |
+| `REDIS_URL` | Projection/idempotency store | `redis://localhost:6379` |
+| `SYSTEM_ADMIN_TOKEN_PUBLIC_KEY_PATH` | Laravel admin public key | `config/system-admin-public.pem` |
+| `SYSTEM_ADMIN_TOKEN_PUBLIC_KEYS` | Optional `kid=path` key ring | empty unless used |
+| `BIDDING_SERVICE_INTERNAL_URL` | Internal Bidding admission endpoint | `http://localhost:5001` |
+| `LIVE_FEED_ADMIN_SESSION_SECRET` | Signs the admin session cookie | required for local admin pages; never commit it |
+
+Optional history database settings are needed only for the history migration
+and history/diagnostic features. The live projection does not require
+`LIVE_FEED_DATABASE_URL`.
+
+### Install, validate, and run
+
+Install dependencies and validate:
 
 ```text
 npm ci
@@ -76,9 +108,43 @@ visibility and is not a blocking CI step until a separate formatting-only cleanu
 Standalone CI provisions RabbitMQ and Redis and runs the full suite. The PostgreSQL history test is
 intentionally skipped there unless `LIVE_FEED_DATABASE_URL` and a compatible database are supplied.
 
-Run `npm run dev` for the service and `npm run watch:auction -- <auction-id>` for the development
-Socket.IO observer. `npm run migrate:history` applies the optional history migration when
+Run `npm run dev` for the service. It builds the admin bundle and starts the
+service at `http://localhost:3001`; `GET http://localhost:3001/health` is the
+health check. The authenticated diagnostics page is
+`http://localhost:3001/admin/live-feed`. Use
+`npm run watch:auction -- <auction-id>` only for the development observer.
+`npm run migrate:history` applies the optional history migration when
 `LIVE_FEED_DATABASE_URL` is configured.
+
+RabbitMQ management UI and credentials are supplied by the infrastructure
+repository. This service does not create Bidding application schemas or seed
+auction data.
+
+### System administrator public key
+
+Node verifies Laravel's dedicated Live Feed SystemAdministrator assertion with
+the public key selected by `SYSTEM_ADMIN_TOKEN_PUBLIC_KEY_PATH`, or by the
+optional `SYSTEM_ADMIN_TOKEN_PUBLIC_KEYS` `kid=path` registry. Laravel keeps
+the private key at `storage/keys/system-admin-private.pem`; Node receives
+only the matching public key at `config/system-admin-public.pem`.
+
+From the Laravel repository directory, provision the pair safely with:
+
+```powershell
+$laravelPrivate = "storage/keys/system-admin-private.pem"
+$nodePublic = "..\nodejs-live-feed\config\system-admin-public.pem"
+New-Item -ItemType Directory -Path (Split-Path -Parent $laravelPrivate) -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $nodePublic) -Force | Out-Null
+if (-not (Test-Path $laravelPrivate)) {
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out $laravelPrivate
+}
+openssl pkey -in $laravelPrivate -pubout -out $nodePublic
+```
+
+Do not overwrite an existing private key without explicitly deciding to
+rotate it. Never copy the private key into this repository or expose it to a
+browser. Production deployments should mount the public key through their
+configuration/secret-management process.
 
 ### Laravel browser handoff
 
@@ -87,9 +153,19 @@ The Laravel admin application uses the configured `CLIENT_ORIGIN` (default
 exchanges its dedicated SystemAdministrator assertion server-to-server, then the
 browser requests the returned Node URL with `credentials: 'include'` and the
 explicit `mode=fetch` query parameter. Node returns `204 No Content` and sets
-the host-only, HttpOnly `live_feed_admin` cookie; no JWT or cookie value is
-exposed to JavaScript. Normal top-level navigation without `mode=fetch` keeps
-the existing redirect to `/admin/live-feed`.
+the host-only, HttpOnly `live_feed_admin` cookie with `SameSite=Lax`, `Path=/`,
+`Max-Age=900`, and `Secure` in production; no JWT or cookie value is exposed
+to JavaScript. Normal top-level navigation without `mode=fetch` keeps the
+existing redirect to `/admin/live-feed`.
+
+The token exchange is `POST /admin/auth/system-token` with the
+SystemAdministrator JWT in the `Authorization: Bearer` header and no request
+body. A valid assertion uses `RS256`, `iss=dbap-system-admin`,
+`aud=live-feed-admin`, `kid=system-admin-development-1`,
+`role=SystemAdministrator`, the `livefeed.admin` permission, valid `iat`/`exp`
+and unique `jti`, plus an optional validated `tenant_id`. Node returns only an
+opaque `handoffCode`; the browser completes it with
+`GET /admin/auth/handoff?code=...&mode=fetch`.
 
 Socket.IO also permits credentials only from `CLIENT_ORIGIN`; room
 authorization still derives the tenant from the signed Node session. Keep
