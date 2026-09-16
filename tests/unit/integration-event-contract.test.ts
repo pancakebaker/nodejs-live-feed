@@ -60,6 +60,9 @@ void test('Socket.IO transport wire values remain stable', () => {
   assert.deepEqual(adminSocketEvents, {
     subscribe: 'admin:subscribe',
     activity: 'admin:activity',
+    activitySubscribe: 'admin:activity:subscribe',
+    activityUnsubscribe: 'admin:activity:unsubscribe',
+    activityDelta: 'admin:activity:delta',
     subscriptionError: 'subscription:error',
   });
   assert.equal(adminSocketRooms.liveFeed, 'admin:live-feed');
