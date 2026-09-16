@@ -91,6 +91,7 @@ export function createLiveFeedService(
   const io = new Server(httpServer, {
     cors: {
       origin: config.clientOrigin,
+      credentials: true,
     },
   });
 
@@ -213,6 +214,7 @@ export function createLiveFeedService(
     assetDirectory: adminAssetDirectory,
     publicAdminDirectory: resolve(dirname(fileURLToPath(import.meta.url)), '../../public/admin'),
     systemAdminPortalUrl: config.systemAdminPortalUrl,
+    clientOrigin: config.clientOrigin,
     systemTokenVerifier: systemAdminTokenVerifier,
     handoffStore: adminHandoffStore,
     getSnapshot: () =>

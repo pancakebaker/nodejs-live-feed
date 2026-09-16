@@ -80,6 +80,24 @@ Run `npm run dev` for the service and `npm run watch:auction -- <auction-id>` fo
 Socket.IO observer. `npm run migrate:history` applies the optional history migration when
 `LIVE_FEED_DATABASE_URL` is configured.
 
+### Laravel browser handoff
+
+The Laravel admin application uses the configured `CLIENT_ORIGIN` (default
+`http://localhost:8000`) for a credentialed browser handoff. Laravel first
+exchanges its dedicated SystemAdministrator assertion server-to-server, then the
+browser requests the returned Node URL with `credentials: 'include'` and the
+explicit `mode=fetch` query parameter. Node returns `204 No Content` and sets
+the host-only, HttpOnly `live_feed_admin` cookie; no JWT or cookie value is
+exposed to JavaScript. Normal top-level navigation without `mode=fetch` keeps
+the existing redirect to `/admin/live-feed`.
+
+Socket.IO also permits credentials only from `CLIENT_ORIGIN`; room
+authorization still derives the tenant from the signed Node session. Keep
+local services on the same hostname, preferably `localhost` for both Laravel
+(`http://localhost:8000`) and Live Feed (`http://localhost:3001`). Do not mix
+`127.0.0.1` with `localhost` for this cookie flow. The handoff is a one-time
+session bootstrap, not a browser-visible bearer-token flow.
+
 ## Related repositories
 
 - [Laravel React Auction Web](https://github.com/pancakebaker/laravel-react-auction-web) is the tenant-facing BFF and browser client.

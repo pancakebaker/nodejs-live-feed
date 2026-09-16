@@ -4,6 +4,23 @@
 import type { Response } from 'express';
 
 /**
+ * Grants credentialed CORS only to the configured Laravel browser origin.
+ * The handoff endpoint uses this for its explicit programmatic mode.
+ */
+export function applyAdminHandoffCors(
+  response: Response,
+  requestOrigin: string | undefined,
+  allowedOrigin: string,
+): boolean {
+  if (!requestOrigin || requestOrigin !== allowedOrigin) return !requestOrigin;
+
+  response.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  response.setHeader('Access-Control-Allow-Credentials', 'true');
+  response.setHeader('Vary', 'Origin');
+  return true;
+}
+
+/**
  * Applies a small CSP and defensive headers to admin responses.
  */
 export function applyAdminSecurityHeaders(response: Response): void {

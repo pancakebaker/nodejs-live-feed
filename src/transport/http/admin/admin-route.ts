@@ -13,7 +13,7 @@ import type {
 import type { LiveFeedDashboardSnapshot } from '../../../application/diagnostics/get-live-feed-dashboard.js';
 import { renderLiveFeedAdmin } from '../../../ui/server/render-live-feed-admin.js';
 import type { AdminAuth } from './admin-auth.js';
-import { applyAdminSecurityHeaders } from './admin-security.js';
+import { applyAdminHandoffCors, applyAdminSecurityHeaders } from './admin-security.js';
 import { adminRoutes } from './admin-routes.js';
 
 /**
@@ -26,6 +26,7 @@ export type AdminRouteDependencies = {
   assetDirectory: string;
   publicAdminDirectory: string;
   systemAdminPortalUrl: string;
+  clientOrigin: string;
   systemTokenVerifier?: AdminTokenVerifier;
   handoffStore?: AdminHandoffStore;
 };
@@ -43,18 +44,45 @@ export function registerAdminRoutes(app: Express, dependencies: AdminRouteDepend
 
   app.get('/admin/auth/handoff', async (request, response) => {
     applyAdminSecurityHeaders(response);
-    applyAdminSecurityHeaders(response);
+    const programmatic = request.query.mode === 'fetch';
+    if (programmatic) {
+      const corsAllowed = applyAdminHandoffCors(
+        response,
+        request.get('origin'),
+        dependencies.clientOrigin,
+      );
+      if (!corsAllowed) {
+        response.status(403).json({
+          error: 'origin_not_allowed',
+          message: 'The handoff origin is not allowed.',
+        });
+        return;
+      }
+    }
+
     const code = typeof request.query.code === 'string' ? request.query.code : '';
     if (!dependencies.handoffStore || !code) {
+      if (programmatic) {
+        response.status(400).json({ error: 'invalid_handoff', message: 'Invalid handoff.' });
+        return;
+      }
       response.redirect('/admin/login');
       return;
     }
     const claims = await dependencies.handoffStore.consume(code);
     if (!claims) {
+      if (programmatic) {
+        response.status(401).json({ error: 'invalid_handoff', message: 'Invalid handoff.' });
+        return;
+      }
       response.redirect('/admin/login');
       return;
     }
     response.setHeader('Set-Cookie', dependencies.auth.createSession(claims));
+    if (programmatic) {
+      response.status(204).end();
+      return;
+    }
     response.redirect(adminRoutes.liveFeed);
   });
 

@@ -110,6 +110,7 @@ function registerTestAdminRoutes(
     assetDirectory: 'dist/ui',
     publicAdminDirectory: 'public/admin',
     systemAdminPortalUrl: 'http://localhost:5099',
+    clientOrigin: 'http://localhost:8000',
     systemTokenVerifier: verifier,
     handoffStore,
     getSnapshot: () => snapshot,
@@ -170,6 +171,86 @@ void test('system-admin exchange creates a one-time opaque handoff without retur
     });
     assert.equal(replay.status, 302);
     assert.equal(replay.headers.get('set-cookie'), null);
+  } finally {
+    await server.close();
+  }
+});
+
+void test('programmatic handoff sets the Node cookie without redirecting', async () => {
+  const app = express();
+  const setup = registerTestAdminRoutes(app);
+  const server = await startApp(app);
+  try {
+    const exchange = await fetch(server.baseUrl + '/admin/auth/system-token', {
+      method: 'POST',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    const { handoffCode } = (await exchange.json()) as { handoffCode: string };
+
+    const handoff = await fetch(
+      server.baseUrl + '/admin/auth/handoff?code=' + handoffCode + '&mode=fetch',
+      {
+        headers: {
+          accept: 'application/json',
+          origin: 'http://localhost:8000',
+        },
+      },
+    );
+    assert.equal(handoff.status, 204);
+    assert.equal(handoff.headers.get('location'), null);
+    assert.equal(handoff.headers.get('access-control-allow-origin'), 'http://localhost:8000');
+    assert.equal(handoff.headers.get('access-control-allow-credentials'), 'true');
+    assert.match(
+      handoff.headers.get('set-cookie') ?? '',
+      /HttpOnly; SameSite=Lax; Path=\/; Max-Age=900/,
+    );
+    assert.equal(setup.handoffStore.consumed, true);
+  } finally {
+    await server.close();
+  }
+});
+
+void test('programmatic handoff rejects an unapproved origin without consuming the code', async () => {
+  const app = express();
+  const setup = registerTestAdminRoutes(app);
+  const server = await startApp(app);
+  try {
+    const exchange = await fetch(server.baseUrl + '/admin/auth/system-token', {
+      method: 'POST',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    const { handoffCode } = (await exchange.json()) as { handoffCode: string };
+    const handoff = await fetch(
+      server.baseUrl + '/admin/auth/handoff?code=' + handoffCode + '&mode=fetch',
+      { headers: { origin: 'http://evil.example' } },
+    );
+
+    assert.equal(handoff.status, 403);
+    assert.equal(handoff.headers.get('access-control-allow-origin'), null);
+    assert.equal(handoff.headers.get('access-control-allow-credentials'), null);
+    assert.equal(handoff.headers.get('set-cookie'), null);
+    assert.equal(setup.handoffStore.consumed, false);
+  } finally {
+    await server.close();
+  }
+});
+
+void test('programmatic handoff codes remain one-time use', async () => {
+  const app = express();
+  const setup = registerTestAdminRoutes(app);
+  const server = await startApp(app);
+  try {
+    const exchange = await fetch(server.baseUrl + '/admin/auth/system-token', {
+      method: 'POST',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    const { handoffCode } = (await exchange.json()) as { handoffCode: string };
+    const url = server.baseUrl + '/admin/auth/handoff?code=' + handoffCode + '&mode=fetch';
+    const headers = { origin: 'http://localhost:8000' };
+
+    assert.equal((await fetch(url, { headers })).status, 204);
+    assert.equal((await fetch(url, { headers })).status, 401);
+    assert.equal(setup.handoffStore.consumed, true);
   } finally {
     await server.close();
   }
