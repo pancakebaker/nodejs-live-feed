@@ -3,3 +3,5 @@ dist/
 coverage/
 .env
 *.local
+config/system-admin-public.pem
+config/live-feed-service-private.pem

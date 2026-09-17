@@ -83,8 +83,9 @@ local placeholders and the exact variable names. The important settings are:
 | `REDIS_URL` | Projection/idempotency store | `redis://localhost:6379` |
 | `SYSTEM_ADMIN_TOKEN_PUBLIC_KEY_PATH` | Laravel admin public key | `config/system-admin-public.pem` |
 | `SYSTEM_ADMIN_TOKEN_PUBLIC_KEYS` | Optional `kid=path` key ring | empty unless used |
-| `BIDDING_SERVICE_INTERNAL_URL` | Internal Bidding admission endpoint | `http://localhost:5001` |
+| `BIDDING_SERVICE_INTERNAL_URL` | Internal Bidding admission endpoint | `http://localhost:5000` |
 | `LIVE_FEED_ADMIN_SESSION_SECRET` | Signs the admin session cookie | required for local admin pages; never commit it |
+| `LIVE_FEED_SERVICE_PRIVATE_KEY_PATH` | Private key for Node-to-Bidding service authentication | `config/live-feed-service-private.pem` |
 
 Optional history database settings are needed only for the history migration
 and history/diagnostic features. The live projection does not require
@@ -145,6 +146,41 @@ Do not overwrite an existing private key without explicitly deciding to
 rotate it. Never copy the private key into this repository or expose it to a
 browser. Production deployments should mount the public key through their
 configuration/secret-management process.
+
+### Bidding Service Live Feed service key
+
+The Live Feed service uses a second, dedicated RSA key pair when calling
+Bidding's `POST /internal/live-feed/access` endpoint. This is separate from
+the SystemAdministrator admin-handoff pair above:
+
+| Trust boundary | Private key owner | Public key recipient |
+| --- | --- | --- |
+| SystemAdministrator admin handoff | Laravel | Node Live Feed |
+| Live Feed service admission | Node Live Feed | Bidding Service |
+
+Node signs short-lived RS256 tokens with the private key at
+`config/live-feed-service-private.pem`. Bidding receives only the matching
+public key at `src/bidding-service/keys/live-feed-service-public.pem` and
+verifies `iss=dbap-live-feed-service`, `sub=live-feed-service`,
+`aud=dbap-bidding-service`, `kid=live-feed-service-v1`, and the standard
+`jti`/`iat`/`nbf`/`exp` claims. The configured local lifetime is 30 seconds.
+
+Provision the pair locally from the Node repository when the files do not
+already exist:
+
+```powershell
+$nodePrivate = "config/live-feed-service-private.pem"
+$biddingPublic = "..\dotnet-bidding-service\src\bidding-service\keys\live-feed-service-public.pem"
+New-Item -ItemType Directory -Path (Split-Path -Parent $nodePrivate) -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $biddingPublic) -Force | Out-Null
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out $nodePrivate
+openssl pkey -in $nodePrivate -pubout -out $biddingPublic
+```
+
+Set `LIVE_FEED_SERVICE_PRIVATE_KEY_PATH=config/live-feed-service-private.pem`
+in the local `.env`. The generated private key must remain local and
+untracked; never copy it into the Bidding repository. The Bidding repository
+is provisioned with the public PEM only.
 
 ### Laravel browser handoff
 
