@@ -11,18 +11,19 @@ default development configuration.
 
 ### 1. Start the shared infrastructure and Bidding Service
 
-Live Feed requires RabbitMQ and Redis. Per-auction subscriptions also call the
+Live Feed requires RabbitMQ and Redis, and per-auction subscriptions call the
 Bidding Service for authoritative admission decisions.
 
-From the sibling `docker-dbap-platform` repository:
+Start the shared development infrastructure from the
+[DBAP Platform Infrastructure](https://github.com/pancakebaker/docker-dbap-platform)
+repository and follow its Quick Start instructions.
 
-```powershell
-Copy-Item .env.example .env
-docker compose up -d postgres rabbitmq redis
-docker compose ps
-```
+Then start the
+[.NET Bidding Service](https://github.com/pancakebaker/dotnet-bidding-service)
+using its Quick Local Setup guide.
 
-Then start the sibling `dotnet-bidding-service` on:
+For the default local development setup, Live Feed expects the Bidding Service
+at:
 
 ```text
 http://localhost:5000
