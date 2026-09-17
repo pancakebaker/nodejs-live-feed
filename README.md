@@ -4,6 +4,106 @@
 
 Standalone Node.js/TypeScript Live Feed service for the Distributed Bidding Auction Platform.
 
+## Quick local setup
+
+This quick start gets the Live Feed service running locally with the platform's
+default development configuration.
+
+### 1. Start the shared infrastructure and Bidding Service
+
+Live Feed requires RabbitMQ and Redis. Per-auction subscriptions also call the
+Bidding Service for authoritative admission decisions.
+
+From the sibling `docker-dbap-platform` repository:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d postgres rabbitmq redis
+docker compose ps
+```
+
+Then start the sibling `dotnet-bidding-service` on:
+
+```text
+http://localhost:5000
+```
+
+### 2. Create the local Live Feed environment
+
+From this repository root:
+
+```powershell
+Copy-Item .env.example .env
+npm ci
+```
+
+For the normal local setup, confirm these values in `.env`:
+
+```text
+PORT=3001
+CLIENT_ORIGIN=http://localhost:8000
+BIDDING_SERVICE_INTERNAL_URL=http://localhost:5000
+LIVE_FEED_SERVICE_PRIVATE_KEY_PATH=config/live-feed-service-private.pem
+```
+
+Keep `localhost` consistent across Live Feed and Laravel. Do not mix
+`127.0.0.1` and `localhost` for the credentialed browser flow.
+
+### 3. Provision the Node -> Bidding service key
+
+This key pair is required for `auction:subscribe`. Node keeps the private key;
+Bidding receives only the matching public key.
+
+From this repository root:
+
+```powershell
+$nodePrivate = "config/live-feed-service-private.pem"
+$biddingPublic = "..\dotnet-bidding-service\src\bidding-service\keys\live-feed-service-public.pem"
+
+New-Item -ItemType Directory -Path (Split-Path -Parent $nodePrivate) -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $biddingPublic) -Force | Out-Null
+
+if (-not (Test-Path $nodePrivate)) {
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out $nodePrivate
+}
+
+openssl pkey -in $nodePrivate -pubout -out $biddingPublic
+```
+
+Both PEM files are local provisioned artifacts and remain untracked. Never copy
+the private key into the Bidding repository.
+
+### 4. Start Live Feed
+
+```powershell
+npm run dev
+```
+
+Verify:
+
+- Health: `http://localhost:3001/health`
+- Admin diagnostics: `http://localhost:3001/admin/live-feed`
+
+At this point the service can consume RabbitMQ events, use Redis projection
+state, and authorize normal per-auction subscriptions through the Bidding
+Service.
+
+### 5. Optional: enable Laravel admin handoff
+
+The Laravel admin dashboard uses a separate key pair. Laravel owns
+`storage/keys/system-admin-private.pem`; Node receives only:
+
+```text
+config/system-admin-public.pem
+```
+
+If you need the admin dashboard/live activity channel, follow
+[System administrator public key](#system-administrator-public-key) and keep
+Laravel on `http://localhost:8000`.
+
+For history storage, detailed environment settings, diagnostics, and security
+details, continue with [Detailed local setup](#detailed-local-setup).
+
 ## Responsibility
 
 Live Feed consumes integration events from RabbitMQ, applies idempotency and aggregate-version
@@ -55,7 +155,7 @@ wire baseline; breaking changes require a new fixture version rather than silent
 Independent npm packaging and version distribution are intentionally deferred until repository
 boundaries are established.
 
-## Local setup
+## Detailed local setup
 
 ### Prerequisites and configuration
 
@@ -93,7 +193,7 @@ and history/diagnostic features. The live projection does not require
 
 ### Install, validate, and run
 
-Install dependencies and validate:
+Install dependencies. Run the validation commands when checking a change or before committing:
 
 ```text
 npm ci
@@ -104,7 +204,7 @@ npm run build
 npm run format:check
 ```
 
-The formatter command currently reports the inherited 62-file source baseline; it is retained for
+The formatter command currently reports an inherited repository-wide source-formatting baseline; it is retained for
 visibility and is not a blocking CI step until a separate formatting-only cleanup is approved.
 Standalone CI provisions RabbitMQ and Redis and runs the full suite. The PostgreSQL history test is
 intentionally skipped there unless `LIVE_FEED_DATABASE_URL` and a compatible database are supplied.
